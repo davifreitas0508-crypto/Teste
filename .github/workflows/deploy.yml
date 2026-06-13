@@ -3,6 +3,7 @@ name: Deploy Nexo to GitHub Pages
 on:
   push:
     branches: [claude/nexo-translator-app-t0f7nl]
+  workflow_dispatch:
 
 permissions:
   contents: read
