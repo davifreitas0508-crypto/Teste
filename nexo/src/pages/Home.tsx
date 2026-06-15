@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { collection, query, where, onSnapshot, doc, getDoc, setDoc, serverTimestamp, getDocs, updateDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { LANGUAGES } from '../translate';
 import NexoLogo from '../NexoLogo';
+import Avatar from '../Avatar';
 import type { AuthUser } from '../AuthContext';
 import type { Conversation, UserProfile } from '../types';
-import { LogOut, Plus, Search, MessageCircle, Globe, Settings, X, Check } from 'lucide-react';
+import { LogOut, Plus, Search, MessageCircle, Globe, Settings, X, Check, Camera } from 'lucide-react';
 
 interface HomeProps {
   me: AuthUser;
@@ -16,9 +17,50 @@ interface HomeProps {
 function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
   const [name, setName] = useState(me.profile.name);
   const [lang, setLang] = useState(me.profile.lang);
+  const [bio, setBio] = useState(me.profile.bio ?? '');
+  const [photoURL, setPhotoURL] = useState(me.profile.photoURL ?? '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Compress image to 120×120 JPEG at 0.75 quality, return base64
+  const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const canvas = document.createElement('canvas');
+        canvas.width = 120;
+        canvas.height = 120;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('Canvas not available')); return; }
+        // Draw cropped square (center crop)
+        const size = Math.min(img.width, img.height);
+        const sx = (img.width - size) / 2;
+        const sy = (img.height - size) / 2;
+        ctx.drawImage(img, sx, sy, size, size, 0, 0, 120, 120);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.onerror = reject;
+      img.src = url;
+    });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    try {
+      const compressed = await compressImage(file);
+      setPhotoURL(compressed);
+    } catch {
+      setError('Erro ao processar imagem. Tente novamente.');
+    }
+    // Reset input so the same file can be re-selected
+    e.target.value = '';
+  };
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Digite um nome.'); return; }
@@ -27,6 +69,8 @@ function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
       await updateDoc(doc(db, 'users', me.uid), {
         name: name.trim(),
         lang,
+        bio: bio.trim(),
+        ...(photoURL ? { photoURL } : {}),
       });
       setSaved(true);
       setTimeout(() => { setSaved(false); onClose(); }, 800);
@@ -37,6 +81,13 @@ function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
   };
 
   const selectedLang = LANGUAGES.find(l => l.code === lang)!;
+
+  // Build a temporary profile preview for Avatar
+  const previewProfile: UserProfile = {
+    ...me.profile,
+    name: name || me.profile.name,
+    photoURL: photoURL || undefined,
+  };
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
@@ -49,13 +100,36 @@ function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
         </div>
 
         <div className="flex flex-col gap-4">
-          {/* Avatar */}
+          {/* Avatar with upload */}
           <div className="flex items-center gap-3 mb-1">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center">
-              <span className="text-white font-bold text-2xl">{name[0]?.toUpperCase() || '?'}</span>
+            <div className="relative">
+              <Avatar profile={previewProfile} size={56} />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="Alterar foto"
+                className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-md hover:bg-purple-700 transition-all"
+              >
+                <Camera size={12} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleFileChange}
+              />
             </div>
             <div>
+              <p className="text-xs text-gray-500 font-medium">{me.profile.name}</p>
               <p className="text-xs text-gray-400">{me.email}</p>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs text-purple-500 hover:text-purple-700 transition-colors mt-0.5"
+              >
+                Alterar foto
+              </button>
             </div>
           </div>
 
@@ -67,6 +141,20 @@ function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
               onChange={e => setName(e.target.value)}
               className="w-full px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
             />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-purple-500 mb-1 block">
+              Recado / Bio
+            </label>
+            <textarea
+              value={bio}
+              onChange={e => setBio(e.target.value.slice(0, 80))}
+              placeholder="Uma frase sobre você…"
+              rows={2}
+              className="w-full px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all resize-none"
+            />
+            <p className="text-xs text-gray-400 text-right">{bio.length}/80</p>
           </div>
 
           <div>
@@ -239,8 +327,8 @@ export default function Home({ me, onOpenChat }: HomeProps) {
                   onClick={() => onOpenChat(conv, other)}
                   className="w-full flex items-center gap-3 bg-white rounded-2xl p-4 border border-purple-50 shadow-sm hover:shadow-md hover:border-purple-200 transition-all duration-200 text-left fade-in"
                 >
-                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center flex-shrink-0">
-                    <span className="text-white font-bold text-lg">{other.name[0].toUpperCase()}</span>
+                  <div className="flex-shrink-0">
+                    <Avatar profile={other} size={48} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
