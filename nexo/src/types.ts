@@ -3,6 +3,8 @@ export interface UserProfile {
   name: string;
   email: string;
   lang: string;
+  photoURL?: string;
+  bio?: string;
 }
 
 export interface Conversation {
@@ -11,6 +13,7 @@ export interface Conversation {
   participantProfiles: Record<string, UserProfile>;
   lastMessage: string;
   lastMessageAt: { toDate(): Date } | null;
+  typing?: Record<string, { toDate(): Date } | null>;
 }
 
 export interface Message {
@@ -20,4 +23,5 @@ export interface Message {
   fromLang: string;
   translations: Record<string, string>;
   createdAt: { toDate(): Date } | null;
+  type?: 'text' | 'audio';
 }

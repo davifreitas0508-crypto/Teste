@@ -1,14 +1,31 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   collection, addDoc, onSnapshot, query, orderBy,
-  doc, updateDoc, serverTimestamp,
+  doc, updateDoc, serverTimestamp, deleteField,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { translate, LANGUAGES } from '../translate';
 import type { AuthUser } from '../AuthContext';
 import type { Conversation, Message, UserProfile } from '../types';
 import NexoLogo from '../NexoLogo';
-import { Send, ArrowLeft, Globe } from 'lucide-react';
+import Avatar from '../Avatar';
+import { Send, ArrowLeft, Globe, Mic, MicOff } from 'lucide-react';
+
+// Language code map for SpeechRecognition
+const SPEECH_LANG_MAP: Record<string, string> = {
+  pt: 'pt-BR',
+  en: 'en-US',
+  es: 'es-ES',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  it: 'it-IT',
+  ja: 'ja-JP',
+  zh: 'zh-CN',
+  ko: 'ko-KR',
+  ru: 'ru-RU',
+  ar: 'ar-SA',
+  hi: 'hi-IN',
+};
 
 interface ChatProps {
   me: AuthUser;
@@ -17,17 +34,16 @@ interface ChatProps {
   onBack: () => void;
 }
 
-function TypingIndicator({ initial }: { initial: string }) {
+function TypingIndicator({ profile }: { profile: UserProfile }) {
   return (
     <div className="flex items-end gap-2 msg-received">
-      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-purple-400 to-violet-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-        {initial}
-      </div>
+      <Avatar profile={profile} size={28} />
       <div className="flex items-center gap-1 bg-white border border-purple-100 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
         <div className="typing-dot w-1.5 h-1.5 rounded-full bg-purple-400" />
         <div className="typing-dot w-1.5 h-1.5 rounded-full bg-purple-400" />
         <div className="typing-dot w-1.5 h-1.5 rounded-full bg-purple-400" />
       </div>
+      <span className="text-xs text-gray-400 pb-1">Digitando...</span>
     </div>
   );
 }
@@ -40,16 +56,25 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
   const [messages, setMessages] = useState<RenderedMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [otherTyping, setOtherTyping] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioError, setAudioError] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recognitionRef = useRef<any>(null);
+
   const myLang = me.profile.lang;
   const otherLang = other.lang;
   const myLangObj = LANGUAGES.find(l => l.code === myLang) ?? LANGUAGES[0];
   const otherLangObj = LANGUAGES.find(l => l.code === otherLang) ?? LANGUAGES[1];
 
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, otherTyping]);
 
+  // Listen to messages
   useEffect(() => {
     const q = query(
       collection(db, 'conversations', conv.id, 'messages'),
@@ -86,25 +111,82 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
     });
   }, [conv.id, me.uid, myLang, otherLang]);
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || sending) return;
+  // Listen to conversation doc for typing indicator
+  useEffect(() => {
+    const convRef = doc(db, 'conversations', conv.id);
+    return onSnapshot(convRef, snap => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const typingMap = data?.typing as Record<string, { toDate(): Date } | null> | undefined;
+      if (!typingMap) {
+        setOtherTyping(false);
+        return;
+      }
+      const otherTs = typingMap[other.uid];
+      if (!otherTs) {
+        setOtherTyping(false);
+        return;
+      }
+      const ts = otherTs.toDate();
+      const now = Date.now();
+      const diffMs = now - ts.getTime();
+      setOtherTyping(diffMs < 5000);
+    });
+  }, [conv.id, other.uid]);
+
+  // Cleanup typing status and recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      // Clear our typing indicator on unmount
+      updateDoc(doc(db, 'conversations', conv.id), {
+        [`typing.${me.uid}`]: deleteField(),
+      }).catch(() => {});
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, [conv.id, me.uid]);
+
+  const updateTyping = useCallback(() => {
+    updateDoc(doc(db, 'conversations', conv.id), {
+      [`typing.${me.uid}`]: serverTimestamp(),
+    }).catch(() => {});
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      updateDoc(doc(db, 'conversations', conv.id), {
+        [`typing.${me.uid}`]: deleteField(),
+      }).catch(() => {});
+    }, 3000);
+  }, [conv.id, me.uid]);
+
+  const sendMessage = async (text: string, type: 'text' | 'audio' = 'text') => {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
     setSending(true);
     setInput('');
+
+    // Clear typing indicator immediately on send
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    updateDoc(doc(db, 'conversations', conv.id), {
+      [`typing.${me.uid}`]: deleteField(),
+    }).catch(() => {});
 
     const convRef = doc(db, 'conversations', conv.id);
     const msgRef = collection(db, 'conversations', conv.id, 'messages');
 
     await addDoc(msgRef, {
       senderId: me.uid,
-      original: text,
+      original: trimmed,
       fromLang: myLang,
       translations: {},
       createdAt: serverTimestamp(),
+      type,
     });
 
     await updateDoc(convRef, {
-      lastMessage: text,
+      lastMessage: type === 'audio' ? `🎤 ${trimmed}` : trimmed,
       lastMessageAt: serverTimestamp(),
       [`participantProfiles.${me.uid}`]: me.profile,
       [`participantProfiles.${other.uid}`]: other,
@@ -113,11 +195,65 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
     setSending(false);
   };
 
+  const handleTextSend = () => sendMessage(input, 'text');
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      handleTextSend();
     }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    updateTyping();
+  };
+
+  const toggleRecording = () => {
+    setAudioError('');
+
+    const SpeechRecognitionClass =
+      (window as any).SpeechRecognition ??
+      (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionClass) {
+      setAudioError('Seu navegador não suporta reconhecimento de voz.');
+      return;
+    }
+
+    if (isRecording && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognitionClass();
+    recognition.lang = SPEECH_LANG_MAP[myLang] ?? 'pt-BR';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = event.results[0][0].transcript;
+      if (transcript.trim()) {
+        sendMessage(transcript, 'audio');
+      }
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error('SpeechRecognition error', event.error);
+      if (event.error !== 'aborted') {
+        setAudioError('Erro ao reconhecer voz. Tente novamente.');
+      }
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsRecording(true);
   };
 
   return (
@@ -131,9 +267,7 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
             <ArrowLeft size={20} />
           </button>
 
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center flex-shrink-0">
-            <span className="text-white font-bold">{other.name[0].toUpperCase()}</span>
-          </div>
+          <Avatar profile={other} size={40} />
 
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-gray-800 text-sm leading-tight">{other.name}</p>
@@ -175,14 +309,15 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
             const senderLang = isMe ? myLangObj : otherLangObj;
             const targetLang = isMe ? otherLangObj : myLangObj;
             const time = msg.createdAt?.toDate?.();
+            const isAudio = msg.type === 'audio';
 
             return (
               <div key={msg.id} className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse msg-sent' : 'msg-received'}`}>
-                <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-white text-xs font-bold ${
-                  isMe ? 'bg-gradient-to-br from-violet-500 to-purple-700' : 'bg-gradient-to-br from-purple-400 to-violet-600'
-                }`}>
-                  {isMe ? 'Eu' : other.name[0].toUpperCase()}
-                </div>
+                {isMe ? (
+                  <Avatar profile={me.profile} size={28} />
+                ) : (
+                  <Avatar profile={other} size={28} />
+                )}
 
                 <div className={`max-w-[72%] flex flex-col gap-1 ${isMe ? 'items-end' : 'items-start'}`}>
                   <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm ${
@@ -190,7 +325,10 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
                       ? 'bg-gradient-to-br from-violet-600 to-purple-700 text-white rounded-br-sm'
                       : 'bg-white border border-purple-100 text-gray-800 rounded-bl-sm'
                   }`}>
-                    <p>{msg.displayText}</p>
+                    <p>
+                      {isAudio && <span className="mr-1">🎤</span>}
+                      {msg.displayText}
+                    </p>
                     <div className={`flex items-center gap-1 mt-1 text-xs ${isMe ? 'text-purple-200 justify-end' : 'text-gray-400'}`}>
                       <Globe size={10} />
                       <span>{targetLang.flag} {targetLang.name}</span>
@@ -214,17 +352,22 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
             );
           })}
 
-          {sending && <TypingIndicator initial={me.profile.name[0].toUpperCase()} />}
+          {otherTyping && <TypingIndicator profile={other} />}
           <div ref={messagesEndRef} />
         </div>
       </main>
 
       <footer className="bg-white border-t border-purple-100 shadow-lg">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-end gap-3">
+        {audioError && (
+          <div className="max-w-3xl mx-auto px-4 pt-2">
+            <p className="text-xs text-red-500 bg-red-50 px-3 py-1.5 rounded-xl">{audioError}</p>
+          </div>
+        )}
+        <div className="max-w-3xl mx-auto px-4 py-3 flex items-end gap-2">
           <div className="flex-1 bg-purple-50 border border-purple-200 rounded-2xl px-4 py-3 focus-within:border-purple-400 focus-within:shadow-md focus-within:shadow-purple-100 transition-all duration-200">
             <textarea
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={`Escreva em ${myLangObj.name}…`}
               rows={1}
@@ -240,8 +383,22 @@ export default function Chat({ me, other, conv, onBack }: ChatProps) {
             </div>
           </div>
 
+          {/* Mic button */}
           <button
-            onClick={sendMessage}
+            onClick={toggleRecording}
+            title={isRecording ? 'Parar gravação' : 'Gravar mensagem de voz'}
+            className={`w-11 h-11 rounded-xl flex items-center justify-center shadow-md transition-all duration-200 ${
+              isRecording
+                ? 'bg-red-500 text-white shadow-red-200 animate-pulse'
+                : 'bg-purple-100 text-purple-500 hover:bg-purple-200'
+            }`}
+          >
+            {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+          </button>
+
+          {/* Send button */}
+          <button
+            onClick={handleTextSend}
             disabled={!input.trim() || sending}
             className="w-11 h-11 rounded-xl bg-gradient-to-br from-violet-600 to-purple-700 text-white flex items-center justify-center shadow-md shadow-purple-200 hover:shadow-lg hover:scale-105 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:scale-100"
           >
