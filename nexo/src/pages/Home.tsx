@@ -1,406 +1,156 @@
-import { useState, useEffect, useRef } from 'react';
-import { collection, query, where, onSnapshot, doc, getDoc, setDoc, serverTimestamp, getDocs, updateDoc } from 'firebase/firestore';
-import { signOut } from 'firebase/auth';
-import { db, auth } from '../firebase';
-import { LANGUAGES } from '../translate';
-import NexoLogo from '../NexoLogo';
-import Avatar from '../Avatar';
-import type { AuthUser } from '../AuthContext';
-import type { Conversation, UserProfile } from '../types';
-import { LogOut, Plus, Search, MessageCircle, Globe, Settings, X, Check, Camera } from 'lucide-react';
+import { ChevronRight, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useApp } from '../context/AppContext';
+import {
+  categorias,
+  getProfissional,
+  getServico,
+  profissionais,
+  promocoes,
+} from '../data/mockData';
+import CategoryPill from '../components/ui/CategoryPill';
+import ProfessionalCard from '../components/ui/ProfessionalCard';
+import SearchBar from '../components/ui/SearchBar';
+import { diaNumero, diaSemanaAbrev, formatarDataLabel } from '../utils/date';
 
-interface HomeProps {
-  me: AuthUser;
-  onOpenChat: (conv: Conversation, other: UserProfile) => void;
-}
+export default function Home() {
+  const navigate = useNavigate();
+  const { cliente, agendamentos } = useApp();
 
-function ProfileModal({ me, onClose }: { me: AuthUser; onClose: () => void }) {
-  const [name, setName] = useState(me.profile.name);
-  const [lang, setLang] = useState(me.profile.lang);
-  const [bio, setBio] = useState(me.profile.bio ?? '');
-  const [photoURL, setPhotoURL] = useState(me.profile.photoURL ?? '');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const proximosAgendamentos = agendamentos
+    .filter((a) => a.clienteId === 'cliente-1' && a.status === 'confirmado')
+    .sort((a, b) => (a.data + a.horaInicio).localeCompare(b.data + b.horaInicio))
+    .slice(0, 2);
 
-  // Compress image to 120×120 JPEG at 0.75 quality, return base64
-  const compressImage = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        const canvas = document.createElement('canvas');
-        canvas.width = 120;
-        canvas.height = 120;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { reject(new Error('Canvas not available')); return; }
-        // Draw cropped square (center crop)
-        const size = Math.min(img.width, img.height);
-        const sx = (img.width - size) / 2;
-        const sy = (img.height - size) / 2;
-        ctx.drawImage(img, sx, sy, size, size, 0, 0, 120, 120);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
-      };
-      img.onerror = reject;
-      img.src = url;
-    });
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError('');
-    try {
-      const compressed = await compressImage(file);
-      setPhotoURL(compressed);
-    } catch {
-      setError('Erro ao processar imagem. Tente novamente.');
-    }
-    // Reset input so the same file can be re-selected
-    e.target.value = '';
-  };
-
-  const handleSave = async () => {
-    if (!name.trim()) { setError('Digite um nome.'); return; }
-    setSaving(true); setError('');
-    try {
-      await updateDoc(doc(db, 'users', me.uid), {
-        name: name.trim(),
-        lang,
-        bio: bio.trim(),
-        ...(photoURL ? { photoURL } : {}),
-      });
-      setSaved(true);
-      setTimeout(() => { setSaved(false); onClose(); }, 800);
-    } catch {
-      setError('Erro ao salvar. Tente novamente.');
-    }
-    setSaving(false);
-  };
-
-  const selectedLang = LANGUAGES.find(l => l.code === lang)!;
-
-  // Build a temporary profile preview for Avatar
-  const previewProfile: UserProfile = {
-    ...me.profile,
-    name: name || me.profile.name,
-    photoURL: photoURL || undefined,
-  };
+  const emDestaque = profissionais.filter((p) => p.emDestaque);
+  const melhorAvaliados = [...profissionais]
+    .sort((a, b) => b.avaliacaoMedia - a.avaliacaoMedia)
+    .slice(0, 4);
 
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
-      <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl fade-in">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="font-bold text-gray-800 text-lg">Configurações do perfil</h2>
-          <button onClick={onClose} className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-4">
-          {/* Avatar with upload */}
-          <div className="flex items-center gap-3 mb-1">
-            <div className="relative">
-              <Avatar profile={previewProfile} size={56} />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                title="Alterar foto"
-                className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-md hover:bg-purple-700 transition-all"
-              >
-                <Camera size={12} />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleFileChange}
-              />
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium">{me.profile.name}</p>
-              <p className="text-xs text-gray-400">{me.email}</p>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-xs text-purple-500 hover:text-purple-700 transition-colors mt-0.5"
-              >
-                Alterar foto
-              </button>
-            </div>
+    <div className="fade-in pb-6">
+      <header className="rounded-b-[2rem] bg-gradient-to-b from-blush-100 to-cream px-5 pb-6 pt-[max(1.25rem,env(safe-area-inset-top))]">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Sparkles size={18} className="text-gold-500" />
+            <span className="font-display text-lg font-semibold tracking-wide text-blush-800">Belle</span>
           </div>
-
-          <div>
-            <label className="text-xs font-medium text-purple-500 mb-1 block">Nome</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-purple-500 mb-1 block">
-              Recado / Bio
-            </label>
-            <textarea
-              value={bio}
-              onChange={e => setBio(e.target.value.slice(0, 80))}
-              placeholder="Uma frase sobre você…"
-              rows={2}
-              className="w-full px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all resize-none"
-            />
-            <p className="text-xs text-gray-400 text-right">{bio.length}/80</p>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-purple-500 mb-1 block">
-              <Globe size={11} className="inline mr-1" />
-              Minha língua
-            </label>
-            <select
-              value={lang}
-              onChange={e => setLang(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all bg-white"
-            >
-              {LANGUAGES.map(l => (
-                <option key={l.code} value={l.code}>
-                  {l.flag} {l.name}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-400 mt-1">
-              Você receberá todas as mensagens em {selectedLang.flag} {selectedLang.name}
-            </p>
-          </div>
-
-          {error && (
-            <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-xl">{error}</p>
-          )}
-
           <button
-            onClick={handleSave}
-            disabled={saving || saved}
-            className="w-full py-3 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-medium text-sm shadow-md shadow-purple-200 hover:shadow-lg transition-all duration-200 disabled:opacity-70 flex items-center justify-center gap-2"
+            onClick={() => navigate('/perfil')}
+            className="h-10 w-10 overflow-hidden rounded-full ring-2 ring-white shadow-soft"
           >
-            {saved ? (
-              <><Check size={16} /> Salvo!</>
-            ) : saving ? (
-              'Salvando...'
-            ) : (
-              'Salvar alterações'
-            )}
+            <img src={cliente.foto} alt={cliente.nome} className="h-full w-full object-cover" />
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
 
-export default function Home({ me, onOpenChat }: HomeProps) {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [showNew, setShowNew] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
-  const [searchEmail, setSearchEmail] = useState('');
-  const [searchError, setSearchError] = useState('');
-  const [searching, setSearching] = useState(false);
+        <h1 className="mt-4 font-display text-2xl font-semibold leading-snug text-ink">
+          Olá, {cliente.nome.split(' ')[0]}, linda! 💕
+        </h1>
+        <p className="mt-0.5 text-sm text-ink/55">O que vamos agendar hoje?</p>
 
-  useEffect(() => {
-    const q = query(
-      collection(db, 'conversations'),
-      where('participants', 'array-contains', me.uid)
-    );
-    return onSnapshot(q, snap => {
-      const convs = snap.docs.map(d => ({ id: d.id, ...d.data() } as Conversation));
-      convs.sort((a, b) => {
-        const ta = a.lastMessageAt?.toDate?.()?.getTime() ?? 0;
-        const tb = b.lastMessageAt?.toDate?.()?.getTime() ?? 0;
-        return tb - ta;
-      });
-      setConversations(convs);
-    });
-  }, [me.uid]);
-
-  const startConversation = async () => {
-    const email = searchEmail.trim().toLowerCase();
-    if (!email) return;
-    if (email === me.email.toLowerCase()) {
-      setSearchError('Não é possível conversar consigo mesmo.');
-      return;
-    }
-    setSearchError(''); setSearching(true);
-
-    const usersSnap = await getDocs(query(collection(db, 'users'), where('email', '==', email)));
-    if (usersSnap.empty) {
-      setSearchError('Usuário não encontrado. Verifique o e-mail.');
-      setSearching(false);
-      return;
-    }
-
-    const otherProfile = usersSnap.docs[0].data() as UserProfile;
-    const convId = [me.uid, otherProfile.uid].sort().join('_');
-    const convRef = doc(db, 'conversations', convId);
-    const convSnap = await getDoc(convRef);
-
-    if (!convSnap.exists()) {
-      await setDoc(convRef, {
-        participants: [me.uid, otherProfile.uid],
-        participantProfiles: {
-          [me.uid]: me.profile,
-          [otherProfile.uid]: otherProfile,
-        },
-        lastMessage: '',
-        lastMessageAt: serverTimestamp(),
-      });
-    }
-
-    const conv: Conversation = convSnap.exists()
-      ? { id: convId, ...convSnap.data() } as Conversation
-      : {
-          id: convId,
-          participants: [me.uid, otherProfile.uid],
-          participantProfiles: { [me.uid]: me.profile, [otherProfile.uid]: otherProfile },
-          lastMessage: '',
-          lastMessageAt: null,
-        };
-
-    setShowNew(false);
-    setSearchEmail('');
-    setSearching(false);
-    onOpenChat(conv, otherProfile);
-  };
-
-  const myLang = LANGUAGES.find(l => l.code === me.profile.lang) ?? LANGUAGES[0];
-
-  return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-violet-50 via-white to-purple-50">
-      <header className="bg-white border-b border-purple-100 shadow-sm">
-        <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
-          <NexoLogo size={32} />
-          <div className="flex items-center gap-2">
-            <div className="text-right mr-1">
-              <p className="text-sm font-semibold text-gray-800">{me.profile.name}</p>
-              <p className="text-xs text-purple-400">{myLang.flag} {myLang.name}</p>
-            </div>
-            <button
-              onClick={() => setShowProfile(true)}
-              title="Configurações do perfil"
-              className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-purple-500 hover:bg-purple-50 transition-all"
-            >
-              <Settings size={16} />
-            </button>
-            <button
-              onClick={() => signOut(auth)}
-              title="Sair"
-              className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-50 transition-all"
-            >
-              <LogOut size={16} />
-            </button>
-          </div>
+        <div className="mt-4">
+          <SearchBar
+            valor=""
+            onChange={() => {}}
+            onFocus={() => navigate('/explorar')}
+            readOnly
+            onFiltro={() => navigate('/explorar')}
+          />
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-md mx-auto px-4 py-4 flex flex-col gap-2">
-          {conversations.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-purple-100 flex items-center justify-center mb-4">
-                <MessageCircle size={28} className="text-purple-400" />
-              </div>
-              <p className="text-gray-600 font-medium">Nenhuma conversa ainda</p>
-              <p className="text-gray-400 text-sm mt-1">Toque no + para iniciar uma nova conversa</p>
-            </div>
-          ) : (
-            conversations.map(conv => {
-              const otherId = conv.participants.find(p => p !== me.uid)!;
-              const other = conv.participantProfiles?.[otherId];
-              if (!other) return null;
-              const otherLang = LANGUAGES.find(l => l.code === other.lang) ?? LANGUAGES[1];
-              const time = conv.lastMessageAt?.toDate?.();
+      <section className="mt-5 px-5">
+        <div className="scrollbar-none flex gap-3 overflow-x-auto pb-1">
+          {categorias.map((c) => (
+            <CategoryPill key={c.id} categoria={c} onClick={() => navigate(`/explorar?categoria=${c.id}`)} />
+          ))}
+        </div>
+      </section>
+
+      {proximosAgendamentos.length > 0 && (
+        <section className="mt-6 px-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-display text-base font-semibold">Agendamentos próximos</h2>
+            <button
+              onClick={() => navigate('/agendamentos')}
+              className="flex items-center text-xs font-medium text-blush-700"
+            >
+              Ver todos <ChevronRight size={14} />
+            </button>
+          </div>
+          <div className="scrollbar-none flex gap-3 overflow-x-auto pb-1">
+            {proximosAgendamentos.map((ag) => {
+              const prof = getProfissional(ag.profissionalId);
+              const serv = getServico(ag.servicoId);
+              if (!prof || !serv) return null;
               return (
                 <button
-                  key={conv.id}
-                  onClick={() => onOpenChat(conv, other)}
-                  className="w-full flex items-center gap-3 bg-white rounded-2xl p-4 border border-purple-50 shadow-sm hover:shadow-md hover:border-purple-200 transition-all duration-200 text-left fade-in"
+                  key={ag.id}
+                  onClick={() => navigate('/agendamentos')}
+                  className="flex w-64 shrink-0 items-center gap-3 rounded-3xl bg-gradient-to-br from-blush-700 to-blush-800 p-4 text-left text-white shadow-soft-lg"
                 >
-                  <div className="flex-shrink-0">
-                    <Avatar profile={other} size={48} />
+                  <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl bg-white/15">
+                    <span className="text-[10px] uppercase leading-none opacity-80">{diaSemanaAbrev(ag.data)}</span>
+                    <span className="text-lg font-bold leading-none">{diaNumero(ag.data)}</span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <p className="font-semibold text-gray-800 text-sm">{other.name}</p>
-                      {time && (
-                        <span className="text-xs text-gray-400">
-                          {time.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <Globe size={10} className="text-purple-400 flex-shrink-0" />
-                      <span className="text-xs text-purple-400">{otherLang.flag} {otherLang.name}</span>
-                    </div>
-                    {conv.lastMessage && (
-                      <p className="text-xs text-gray-500 truncate mt-1">{conv.lastMessage}</p>
-                    )}
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{serv.nome}</p>
+                    <p className="truncate text-xs text-white/70">{prof.nome}</p>
+                    <p className="mt-0.5 text-xs font-medium text-white/90">{ag.horaInicio} · {formatarDataLabel(ag.data)}</p>
                   </div>
                 </button>
               );
-            })
-          )}
-        </div>
-      </main>
-
-      {showProfile && <ProfileModal me={me} onClose={() => setShowProfile(false)} />}
-
-      {showNew && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl fade-in">
-            <h2 className="font-bold text-gray-800 text-lg mb-1">Nova conversa</h2>
-            <p className="text-sm text-gray-500 mb-4">Digite o e-mail da pessoa com quem deseja conversar</p>
-
-            <div className="flex gap-2">
-              <input
-                type="email"
-                value={searchEmail}
-                onChange={e => { setSearchEmail(e.target.value); setSearchError(''); }}
-                onKeyDown={e => e.key === 'Enter' && startConversation()}
-                placeholder="email@exemplo.com"
-                autoFocus
-                className="flex-1 px-4 py-2.5 rounded-xl border border-purple-200 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
-              />
-              <button
-                onClick={startConversation}
-                disabled={searching || !searchEmail.trim()}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white text-sm font-medium disabled:opacity-50 transition-all"
-              >
-                {searching ? '...' : <Search size={16} />}
-              </button>
-            </div>
-
-            {searchError && (
-              <p className="text-xs text-red-500 mt-2 bg-red-50 px-3 py-2 rounded-xl">{searchError}</p>
-            )}
-
-            <button
-              onClick={() => { setShowNew(false); setSearchEmail(''); setSearchError(''); }}
-              className="w-full mt-3 py-2 text-sm text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              Cancelar
-            </button>
+            })}
           </div>
-        </div>
+        </section>
       )}
 
-      <button
-        onClick={() => setShowNew(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-600 to-purple-700 text-white flex items-center justify-center shadow-xl shadow-purple-300 hover:scale-110 transition-all duration-200"
-      >
-        <Plus size={24} />
-      </button>
+      <section className="mt-6 px-5">
+        <div className="scrollbar-none flex gap-3 overflow-x-auto pb-1">
+          {promocoes.map((promo) => (
+            <div
+              key={promo.id}
+              className={`flex w-72 shrink-0 flex-col justify-between rounded-3xl bg-gradient-to-br ${promo.corFundo} p-5 shadow-soft`}
+            >
+              <span className="w-fit rounded-full bg-white/70 px-3 py-1 text-xs font-bold text-blush-800">
+                {promo.desconto} OFF
+              </span>
+              <div className="mt-4">
+                <p className="font-display text-base font-semibold text-ink">{promo.titulo}</p>
+                <p className="mt-0.5 text-xs text-ink/60">{promo.descricao}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-7 px-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-display text-base font-semibold">Profissionais em destaque</h2>
+        </div>
+        <div className="scrollbar-none flex gap-3 overflow-x-auto pb-1">
+          {emDestaque.map((p) => (
+            <ProfessionalCard key={p.id} profissional={p} variante="compacto" />
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-7 px-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-display text-base font-semibold">Mais bem avaliados</h2>
+          <button
+            onClick={() => navigate('/explorar')}
+            className="flex items-center text-xs font-medium text-blush-700"
+          >
+            Ver todos <ChevronRight size={14} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-3">
+          {melhorAvaliados.map((p) => (
+            <ProfessionalCard key={p.id} profissional={p} />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

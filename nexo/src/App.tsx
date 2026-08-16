@@ -1,50 +1,76 @@
-import { useState } from 'react';
-import { AuthProvider, useAuth } from './AuthContext';
+import { Navigate, Route, HashRouter, Routes } from 'react-router-dom';
+import { AppProvider, useApp } from './context/AppContext';
+import ToastHost from './components/ToastHost';
+import ClientLayout from './layouts/ClientLayout';
+import ProLayout from './layouts/ProLayout';
 import Login from './pages/Login';
 import Home from './pages/Home';
-import Chat from './pages/Chat';
-import type { Conversation, UserProfile } from './types';
+import Explore from './pages/Explore';
+import ProfessionalProfile from './pages/ProfessionalProfile';
+import BookingFlow from './pages/BookingFlow';
+import Confirmation from './pages/Confirmation';
+import Appointments from './pages/Appointments';
+import Favorites from './pages/Favorites';
+import Profile from './pages/Profile';
+import ProDashboard from './pages/pro/ProDashboard';
+import ProServices from './pages/pro/ProServices';
+import ProClients from './pages/pro/ProClients';
+import ProReviews from './pages/pro/ProReviews';
+import ProSettings from './pages/pro/ProSettings';
 
-function NexoApp() {
-  const auth = useAuth();
-  const [activeChat, setActiveChat] = useState<{ conv: Conversation; other: UserProfile } | null>(null);
+function RoteamentoPrivado() {
+  const { sessao } = useApp();
 
-  if (auth === undefined) {
+  if (!sessao) {
     return (
-      <div className="h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 to-purple-50">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 rounded-full border-4 border-purple-200 border-t-purple-600 animate-spin" />
-          <span className="text-sm text-purple-400 font-medium">Carregando…</span>
-        </div>
-      </div>
+      <Routes>
+        <Route path="/entrar" element={<Login />} />
+        <Route path="*" element={<Navigate to="/entrar" replace />} />
+      </Routes>
     );
   }
 
-  if (!auth) return <Login />;
-
-  if (activeChat) {
+  if (sessao.tipo === 'profissional') {
     return (
-      <Chat
-        me={auth}
-        other={activeChat.other}
-        conv={activeChat.conv}
-        onBack={() => setActiveChat(null)}
-      />
+      <Routes>
+        <Route path="/entrar" element={<Login />} />
+        <Route path="/pro" element={<ProLayout />}>
+          <Route index element={<ProDashboard />} />
+          <Route path="servicos" element={<ProServices />} />
+          <Route path="clientes" element={<ProClients />} />
+          <Route path="avaliacoes" element={<ProReviews />} />
+          <Route path="configuracoes" element={<ProSettings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/pro" replace />} />
+      </Routes>
     );
   }
 
   return (
-    <Home
-      me={auth}
-      onOpenChat={(conv, other) => setActiveChat({ conv, other })}
-    />
+    <Routes>
+      <Route path="/entrar" element={<Login />} />
+      <Route element={<ClientLayout />}>
+        <Route path="/" element={<Home />} />
+        <Route path="/explorar" element={<Explore />} />
+        <Route path="/agendamentos" element={<Appointments />} />
+        <Route path="/favoritos" element={<Favorites />} />
+        <Route path="/perfil" element={<Profile />} />
+      </Route>
+      <Route path="/profissional/:id" element={<ProfessionalProfile />} />
+      <Route path="/agendar/:servicoId" element={<BookingFlow />} />
+      <Route path="/confirmacao/:id" element={<Confirmation />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <NexoApp />
-    </AuthProvider>
+    <AppProvider>
+      <ToastHost />
+      <HashRouter>
+        <RoteamentoPrivado />
+      </HashRouter>
+    </AppProvider>
   );
 }
